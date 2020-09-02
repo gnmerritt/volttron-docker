@@ -8,17 +8,16 @@ SHELL [ "bash", "-c" ]
 
 ENV OS_TYPE=debian
 ENV DIST=buster
-ENV VOLTTRON_GIT_BRANCH=rabbitmq-volttron
+ENV VOLTTRON_GIT_BRANCH=releases/7.x
 ENV VOLTTRON_USER_HOME=/home/volttron
 ENV VOLTTRON_HOME=${VOLTTRON_USER_HOME}/.volttron
 ENV CODE_ROOT=/code
 ENV VOLTTRON_ROOT=${CODE_ROOT}/volttron
 ENV VOLTTRON_USER=volttron
-ENV USER_PIP_BIN=${VOLTTRON_USER_HOME}/.local/bin
+ENV RABBITMQ_VERSION=3.7.7
 ENV RMQ_ROOT=${VOLTTRON_USER_HOME}/rabbitmq_server
-ENV RMQ_HOME=${RMQ_ROOT}/rabbitmq_server-3.7.7
+ENV RMQ_HOME=${RMQ_ROOT}/rabbitmq_server-${RABBITMQ_VERSION}
 
-# --no-install-recommends \
 USER root
 RUN set -eux; apt-get update; apt-get install -y --no-install-recommends \
     procps \
@@ -29,6 +28,7 @@ RUN set -eux; apt-get update; apt-get install -y --no-install-recommends \
     python3-dev \
     python3-pip \
     python3-setuptools \
+    python3-psycopg2 \
     openssl \
     libssl-dev \
     libevent-dev \
@@ -40,11 +40,12 @@ RUN set -eux; apt-get update; apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     libffi-dev
-
-
+# backwards compatibility for scripted pip invocations
+RUN ln -s $(which pip3) /usr/bin/pip
 RUN id -u $VOLTTRON_USER &>/dev/null || adduser --disabled-password --gecos "" $VOLTTRON_USER
 
-RUN mkdir -p /code && chown $VOLTTRON_USER.$VOLTTRON_USER /code \
+RUN mkdir -p /code \
+  && chown -R $VOLTTRON_USER.$VOLTTRON_USER /code \
   && echo "export PATH=/home/volttron/.local/bin:$PATH" > /home/volttron/.bashrc
 
 ############################################
@@ -58,16 +59,23 @@ FROM volttron_base AS volttron_core
 # https://github.com/moby/moby/issues/35018
 # COPY --chown=volttron:volttron . ${VOLTTRON_ROOT}
 
+RUN git clone https://github.com/VOLTTRON/volttron -b ${VOLTTRON_GIT_BRANCH} ${VOLTTRON_ROOT} \
+  && chown -R volttron.volttron ${VOLTTRON_ROOT}
+
 USER $VOLTTRON_USER
-
-# The following lines ar no longer necesary because of the copy command above.
-#WORKDIR /code
-#RUN git clone https://github.com/VOLTTRON/volttron -b ${VOLTTRON_GIT_BRANCH}
-COPY --chown=volttron:volttron volttron /code/volttron
-
-WORKDIR /code/volttron
-RUN pip3 install -e . --user
-RUN echo "package installed at `date`"
+WORKDIR ${VOLTTRON_ROOT}
+# install the optional dependencies here, boostrap.py doesn't work in the container
+# (except for postgresql, which uses the system package for better stability)
+RUN pip3 install -e ${VOLTTRON_ROOT} --user \
+  && pip3 install -e ${VOLTTRON_ROOT}[web] --user \
+  && pip3 install -e ${VOLTTRON_ROOT}[pandas] --user \
+  && pip3 install -e ${VOLTTRON_ROOT}[influxdb] --user \
+  && pip3 install -e ${VOLTTRON_ROOT}[weather] --user \
+  && pip3 install -e ${VOLTTRON_ROOT}[mongo] --user \
+  && pip3 install -e ${VOLTTRON_ROOT}[market] --user \
+  && pip3 install -e ${VOLTTRON_ROOT}[drivers] --user \
+  && pip3 install -e ${VOLTTRON_ROOT}[crate] --user
+RUN echo "packages installed at `date`"
 
 ############################################
 # RABBITMQ SPECIFIC INSTALLATION
@@ -84,9 +92,11 @@ RUN chmod +x /startup/*
 
 USER $VOLTTRON_USER
 RUN mkdir $RMQ_ROOT
+ENV RABBITMQ_TAR=rabbitmq-server-generic-unix-${RABBITMQ_VERSION}.tar.xz
 RUN set -eux \
-    && wget -P $VOLTTRON_USER_HOME https://github.com/rabbitmq/rabbitmq-server/releases/download/v3.7.7/rabbitmq-server-generic-unix-3.7.7.tar.xz \
-    && tar -xf $VOLTTRON_USER_HOME/rabbitmq-server-generic-unix-3.7.7.tar.xz --directory $RMQ_ROOT \
+    && wget -P $VOLTTRON_USER_HOME https://github.com/rabbitmq/rabbitmq-server/releases/download/v${RABBITMQ_VERSION}/${RABBITMQ_TAR} \
+    && tar -xf $VOLTTRON_USER_HOME/${RABBITMQ_TAR} --directory $RMQ_ROOT \
+    && rm ${VOLTTRON_USER_HOME}/${RABBITMQ_TAR} \
     && $RMQ_HOME/sbin/rabbitmq-plugins enable rabbitmq_management rabbitmq_federation rabbitmq_federation_management rabbitmq_shovel rabbitmq_shovel_management rabbitmq_auth_mechanism_ssl rabbitmq_trust_store
 ############################################
 
@@ -102,5 +112,3 @@ USER root
 WORKDIR ${VOLTTRON_USER_HOME}
 ENTRYPOINT ["/startup/entrypoint.sh"]
 CMD ["/startup/bootstart.sh"]
-
-

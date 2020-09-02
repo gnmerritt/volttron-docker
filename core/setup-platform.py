@@ -1,12 +1,11 @@
 import logging
-from shutil import copy
 import subprocess
 import os
 import sys
 import yaml
 from time import sleep
 
-from volttron.platform import get_home, set_home
+from volttron.platform import set_home
 from volttron.platform.instance_setup import setup_rabbitmq_volttron
 
 logging.basicConfig(level=logging.DEBUG)
@@ -21,7 +20,7 @@ INSTALL_PATH = "{}/scripts/install-agent.py".format(VOLTTRON_ROOT)
 KEYSTORES = os.path.join(VOLTTRON_HOME, "keystores")
 
 if not VOLTTRON_HOME:
-    VOLTTRON_HOME="/home/volttron/.volttron"
+    VOLTTRON_HOME = "/home/volttron/.volttron"
 
 set_home(VOLTTRON_HOME)
 
@@ -34,7 +33,7 @@ elif os.path.isfile('/platform_config.yml'):
 # Stop processing if platform config hasn't been specified
 if platform_config is None:
     sys.stderr.write("No platform configuration specified.")
-    sys.exit(0)
+    sys.exit(-1)
 
 with open(platform_config) as cin:
     config = yaml.safe_load(cin)
@@ -89,13 +88,13 @@ if platform_cfg.get('message-bus') == 'rmq':
     os.chdir(VOLTTRON_ROOT)
 
     setup_rabbitmq_volttron('single', True, instance_name=platform_cfg.get('instance-name'))
-    
+
     os.chdir(now_dir)
 
 
 need_to_install = {}
 
-print("Available agents that are needing to be setup/installed")
+print("Available agents are:")
 print(agents)
 
 # TODO Fix so that the agents identities are consulted.
@@ -104,12 +103,16 @@ for identity, specs in agents.items():
     if not os.path.exists(path_to_keystore):
         need_to_install[identity] = specs
 
+print("Agents needing setup/install are: {}"
+      .format(list(need_to_install.keys())))
+
 # if we need to do installs then we haven't setup this at all.
 if need_to_install:
     # Start volttron first because we can't install anything without it
     proc = subprocess.Popen([VOLTTRON_CMD, "-vv"])
-    assert proc is not None
+    assert proc is not None, "Volttron did not start"
     sleep(20)
+    assert proc.returncode is None, "Volttron terminated unexpectedly"
 
     config_dir = os.path.join("configs")
     for identity, spec in need_to_install.items():
@@ -134,9 +137,9 @@ if need_to_install:
             continue
 
         # grab the priority from the system config file
-        priority = spec.get('priority', 50)
+        priority = spec.get('priority', '50')
 
-        install_cmd = ["python", INSTALL_PATH]
+        install_cmd = ["python3", INSTALL_PATH]
         install_cmd.extend(["--agent-source", agent_source])
         install_cmd.extend(["--vip-identity", identity])
         install_cmd.extend(["--start", "--priority", priority])
@@ -170,6 +173,6 @@ if need_to_install:
 
     # Stop running volttron now that it is setup.
     subprocess.call(["vctl", "shutdown", "--platform"])
-
     sleep(5)
-    sys.exit(0)
+
+sys.exit(0)
